@@ -1,0 +1,629 @@
+    max-width: 800px;
+    margin: auto;
+}
+
+h1 {
+    background: white;
+    padding: 20px;
+    border-radius: 12px;
+    text-align: center;
+}
+
+.box {
+    background: white;
+    padding: 20px;
+    margin-top: 20px;
+    border-radius: 12px;
+}
+
+input,
+textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px;
+    margin-top: 8px;
+    margin-bottom: 12px;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    font-size: 16px;
+}
+
+textarea {
+    height: 120px;
+}
+
+button {
+    padding: 8px 14px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 15px;
+}
+
+.post {
+    background: white;
+    padding: 20px;
+    margin-top: 20px;
+    border-radius: 12px;
+}
+
+.post-text {
+    font-size: 18px;
+    margin: 15px 0;
+    word-wrap: break-word;
+}
+
+.info {
+    color: #777;
+    font-size: 13px;
+}
+
+.actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 15px;
+}
+
+.comment {
+    background: #f3f3f3;
+    padding: 10px;
+    margin-top: 8px;
+    border-radius: 8px;
+}
+
+a {
+    text-decoration: none;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>ウェブサーバー</h1>
+
+<div class="box">
+
+<h2>📁 ファイルをアップロード</h2>
+
+<form action="/upload" method="post" enctype="multipart/form-data">
+
+<input
+    type="file"
+    name="file"
+>
+
+<br>
+
+<button type="submit">
+アップロード
+</button>
+
+</form>
+
+<p>
+ゲーム、画像、HTMLなどのファイルを追加できます。
+</p>
+
+</div>
+
+<div class="box">
+
+<h2>✏️ 文字を投稿</h2>
+
+<form action="/post" method="post">
+
+<label>名前</label>
+
+<input
+    type="text"
+    name="username"
+    placeholder="名前を入力"
+>
+
+<label>投稿内容</label>
+
+<textarea
+    name="text"
+    placeholder="ここに文字を書いてください"
+></textarea>
+
+<button type="submit">
+投稿する
+</button>
+
+</form>
+
+</div>
+"""
+
+            if not posts:
+
+                page += """
+<div class="box">
+まだ投稿はありません。
+</div>
+"""
+
+            for post in reversed(posts):
+
+                username = html.escape(
+                    post.get("username", "名無し")
+                )
+
+                text = html.escape(
+                    post.get("text", "")
+                )
+
+                text = text.replace("\n", "<br>")
+
+                post_id = post.get("id", "")
+
+                post_time = html.escape(
+                    post.get("time", "")
+                )
+
+                likes = post.get("likes", 0)
+                dislikes = post.get("dislikes", 0)
+
+                page += f"""
+<div class="post">
+
+<div class="info">
+投稿者：{username}<br>
+投稿日時：{post_time}
+</div>
+
+<div class="post-text">
+{text}
+</div>
+
+<div class="actions">
+
+<form action="/like" method="post">
+
+<input
+    type="hidden"
+    name="post_id"
+    value="{post_id}"
+>
+
+<button type="submit">
+👍 高評価 {likes}
+</button>
+
+</form>
+
+<form action="/dislike" method="post">
+
+<input
+    type="hidden"
+    name="post_id"
+    value="{post_id}"
+>
+
+<button type="submit">
+👎 低評価 {dislikes}
+</button>
+
+</form>
+
+</div>
+
+<h3>💬 コメント</h3>
+"""
+
+                comments = post.get("comments", [])
+
+                for comment in comments:
+
+                    comment_name = html.escape(
+                        comment.get("username", "名無し")
+                    )
+
+                    comment_text = html.escape(
+                        comment.get("text", "")
+                    )
+
+                    comment_text = comment_text.replace(
+                        "\n",
+                        "<br>"
+                    )
+
+                    comment_time = html.escape(
+                        comment.get("time", "")
+                    )
+
+                    page += f"""
+<div class="comment">
+
+<b>{comment_name}</b>
+
+<div>
+{comment_text}
+</div>
+
+<div class="info">
+{comment_time}
+</div>
+
+</div>
+"""
+
+                page += f"""
+
+<form action="/comment" method="post">
+
+<input
+    type="hidden"
+    name="post_id"
+    value="{post_id}"
+>
+
+<input
+    type="text"
+    name="username"
+    placeholder="名前"
+>
+
+<input
+    type="text"
+    name="text"
+    placeholder="コメントを書く"
+>
+
+<button type="submit">
+コメントする
+</button>
+
+</form>
+
+</div>
+"""
+
+            page += """
+
+<div class="box">
+
+<a href="/games/">
+🎮 ゲーム・画像などのファイルを見る
+</a>
+
+</div>
+
+</div>
+
+</body>
+
+</html>
+"""
+
+            self.send_html(page)
+
+        elif path == "/games/":
+
+            try:
+                files = os.listdir(GAMES_DIR)
+            except:
+                files = []
+
+            page = """
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+
+<meta charset="UTF-8">
+
+<title>ファイル</title>
+
+</head>
+
+<body>
+
+<h1>🎮 ゲーム・画像など</h1>
+"""
+
+            for filename in files:
+
+                if filename == ".DS_Store":
+                    continue
+
+                safe_name = html.escape(filename)
+
+                page += f"""
+<p>
+<a href="/games/{safe_name}">
+{safe_name}
+</a>
+</p>
+"""
+
+            page += """
+
+<p>
+<a href="/">
+← ウェブサーバーに戻る
+</a>
+</p>
+
+</body>
+</html>
+"""
+
+            self.send_html(page)
+
+        else:
+
+            super().do_GET()
+
+    def do_POST(self):
+
+        path = urlparse(self.path).path
+
+        # ファイルアップロード
+        if path == "/upload":
+
+            content_type = self.headers.get(
+                "Content-Type",
+                ""
+            )
+
+            if "multipart/form-data" not in content_type:
+
+                self.redirect_home()
+                return
+
+            length = int(
+                self.headers.get(
+                    "Content-Length",
+                    0
+                )
+            )
+
+            if length <= 0:
+
+                self.redirect_home()
+                return
+
+            body = self.rfile.read(length)
+
+            # MIMEメッセージとして解析
+            raw_message = (
+                b"Content-Type: "
+                + content_type.encode("utf-8")
+                + b"\r\n\r\n"
+                + body
+            )
+
+            try:
+
+                message = BytesParser(
+                    policy=default
+                ).parsebytes(raw_message)
+
+            except Exception as e:
+
+                print("アップロード解析エラー:", e)
+
+                self.redirect_home()
+                return
+
+            os.makedirs(
+                GAMES_DIR,
+                exist_ok=True
+            )
+
+            uploaded = False
+
+            for part in message.iter_parts():
+
+                filename = part.get_filename()
+
+                if filename:
+
+                    # 危険なパスを削除
+                    filename = os.path.basename(
+                        filename
+                    )
+
+                    # 空の名前を防止
+                    if filename == "":
+                        continue
+
+                    # ファイル名に使えない文字を整理
+                    filename = re.sub(
+                        r'[\\/:*?"<>|]',
+                        "_",
+                        filename
+                    )
+
+                    data = part.get_payload(
+                        decode=True
+                    )
+
+                    if data is None:
+                        continue
+
+                    save_path = os.path.join(
+                        GAMES_DIR,
+                        filename
+                    )
+
+                    # 同じ名前があった場合
+                    if os.path.exists(save_path):
+
+                        name, ext = os.path.splitext(
+                            filename
+                        )
+
+                        filename = (
+                            name
+                            + "_"
+                            + uuid.uuid4().hex[:6]
+                            + ext
+                        )
+
+                        save_path = os.path.join(
+                            GAMES_DIR,
+                            filename
+                        )
+
+                    with open(
+                        save_path,
+                        "wb"
+                    ) as f:
+
+                        f.write(data)
+
+                    print(
+                        "アップロード:",
+                        filename
+                    )
+
+                    uploaded = True
+
+            self.redirect_home()
+            return
+
+        # ここから文字投稿など
+        form = self.read_form()
+
+        posts = load_posts()
+
+        if path == "/post":
+
+            username = form.get(
+                "username",
+                ""
+            ).strip()
+
+            text = form.get(
+                "text",
+                ""
+            ).strip()
+
+            if username == "":
+                username = "名無し"
+
+            if text != "":
+
+                posts.append({
+
+                    "id": uuid.uuid4().hex,
+
+                    "username": username,
+
+                    "text": text,
+
+                    "time": get_time(),
+
+                    "likes": 0,
+
+                    "dislikes": 0,
+
+                    "comments": []
+
+                })
+
+                save_posts(posts)
+
+        elif path == "/like":
+
+            post_id = form.get(
+                "post_id",
+                ""
+            )
+
+            for post in posts:
+
+                if post.get("id") == post_id:
+
+                    post["likes"] = (
+                        post.get("likes", 0) + 1
+                    )
+
+                    break
+
+            save_posts(posts)
+
+        elif path == "/dislike":
+
+            post_id = form.get(
+                "post_id",
+                ""
+            )
+
+            for post in posts:
+
+                if post.get("id") == post_id:
+
+                    post["dislikes"] = (
+                        post.get("dislikes", 0) + 1
+                    )
+
+                    break
+
+            save_posts(posts)
+
+        elif path == "/comment":
+
+            post_id = form.get(
+                "post_id",
+                ""
+            )
+
+            username = form.get(
+                "username",
+                ""
+            ).strip()
+
+            text = form.get(
+                "text",
+                ""
+            ).strip()
+
+            if username == "":
+                username = "名無し"
+
+            if text != "":
+
+                for post in posts:
+
+                    if post.get("id") == post_id:
+
+                        post.setdefault(
+                            "comments",
+                            []
+                        ).append({
+
+                            "username": username,
+
+                            "text": text,
+
+                            "time": get_time()
+
+                        })
+
+                        break
+
+                save_posts(posts)
+
+        self.redirect_home()
+
+
+if __name__ == "__main__":
+
+    server = HTTPServer(
+        ("localhost", PORT),
+        Server
+    )
+
+    print(
+        "サーバー起動: http://localhost:8000"
+    )
+
+    server.serve_forever()

@@ -1,0 +1,78 @@
+[
+  {
+    "id": "917c5ddc3ee142aaa02e7fcdc8e0c140",
+    "username": "sou",
+    "text": "これはテストテキストです",
+    "time": "2026年09月18日 17:21",
+    "likes": 4,
+    "dislikes": 0,
+    "comments": []
+  },
+  {
+    "id": "9e96bbe764b149ff9c92a6d9c4bfe215",
+    "username": "SOU管理者",
+    "text": "アップデート後テスト",
+    "filename": "",
+    "time": "2026年09月18日 18:06",
+    "likes": 1,
+    "dislikes": 0,
+    "liked_users": [
+      "SOU管理者"
+    ],
+    "disliked_users": [],
+    "comments": []
+  },
+  {
+    "id": "ecabecfc7aca4a2494885d755fa50c5d",
+    "username": "SOU管理者",
+    "text": "1234",
+    "filename": "",
+    "time": "2026年09月18日 18:09",
+    "likes": 1,
+    "dislikes": 0,
+    "liked_users": [
+      "SOU管理者"
+    ],
+    "disliked_users": [],
+    "comments": []
+  },
+  {
+    "id": "0672a5bfa64d4476958d22a80116555d",
+    "username": "SOU%E7%AE%A1%E7%90%86%E8%80%85",
+    "channel": "メインチャンネル",
+    "text": "1234",
+    "filename": "",
+    "time": "2026年09月18日 18:47",
+    "likes": 0,
+    "dislikes": 0,
+    "liked_users": [],
+    "disliked_users": [],
+    "comments": []
+  },
+  {
+    "id": "fd440e533a114914ad39046481e4b8af",
+    "username": "SOU%E7%AE%A1%E7%90%86%E8%80%85",
+    "channel": "メインチャンネル",
+    "text": "1234",
+    "filename": "",
+    "time": "2026年09月18日 18:47",
+    "likes": 0,
+    "dislikes": 0,
+    "liked_users": [],
+    "disliked_users": [],
+    "comments": []
+  },
+  {
+    "id": "96159905214746fbbb1255f8fb291152",
+    "username": "SOU%E7%AE%A1%E7%90%86%E8%80%85",
+    "channel": "メインチャンネル",
+    "text": "1234",
+    "filename": "",
+    "time": "2026年09月18日 18:47",
+    "likes": 0,
+    "dislikes": 0,
+    "liked_users": [],
+    "disliked_users": [],
+    "comments": []
+  }
+]
