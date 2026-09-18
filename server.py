@@ -1,1718 +1,1364 @@
-# server.py
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
-from email.parser import BytesParser
-from email.policy import default
 from datetime import datetime
 import json
 import os
 import html
+import hashlib
 import uuid
 import mimetypes
 
 PORT = int(os.environ.get("PORT", "8000"))
 
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+BASE = os.path.dirname(os.path.abspath(__file__))
+DATA = os.path.join(BASE, "data")
+UPLOADS = os.path.join(BASE, "uploads")
+
+os.makedirs(DATA, exist_ok=True)
+os.makedirs(UPLOADS, exist_ok=True)
 
 FILES = {
-    "posts": "posts.json",
     "users": "users.json",
-    "channels": "channels.json",
+    "posts": "posts.json",
+    "messages": "messages.json",
     "follows": "follows.json",
-    "messages": "messages.json"
+    "comments": "comments.json",
+    "sessions": "sessions.json",
+    "warnings": "warnings.json",
+    "settings": "settings.json"
 }
 
 
-def load(name, default_value):
-    filename = FILES[name]
+def load(name, default=None):
+    path = os.path.join(DATA, FILES[name])
 
-    if not os.path.exists(filename):
-        return default_value
+    if not os.path.exists(path):
+        return default if default is not None else []
 
     try:
-        with open(filename, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except:
-        return default_value
+        return default if default is not None else []
 
 
 def save(name, data):
-    with open(FILES[name], "w", encoding="utf-8") as f:
+    path = os.path.join(DATA, FILES[name])
+
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def esc(value):
-    return html.escape(str(value))
-
-
 def now():
-    return datetime.now().strftime("%Y年%m月%d日 %H:%M")
+    return datetime.now().strftime("%Y/%m/%d %H:%M")
 
 
-def safe_filename(name):
-    name = os.path.basename(name)
-    result = ""
-
-    for c in name:
-        if c.isalnum() or c in "._-":
-            result += c
-
-    return result[:100] or "file"
+def password_hash(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
 
-def get_user(handler):
+def esc(text):
+    return html.escape(str(text))
+
+
+def find_user(username):
+    for u in load("users", []):
+        if u.get("username") == username:
+            return u
+    return None
+
+
+def session_user(handler):
     cookie = handler.headers.get("Cookie", "")
+
+    if not cookie:
+        return None
+
+    token = None
 
     for item in cookie.split(";"):
         item = item.strip()
 
-        if item.startswith("username="):
-            return item[len("username="):]
+        if item.startswith("session="):
+            token = item.split("=", 1)[1]
 
-    return ""
+    if not token:
+        return None
+
+    sessions = load("sessions", {})
+
+    if token in sessions:
+        return sessions[token]
+
+    return None
 
 
-class Server(BaseHTTPRequestHandler):
+def new_session(username):
+    sessions = load("sessions", {})
 
-    def html(self, body, title="ウェブサーバー"):
-        user = get_user(self)
+    token = str(uuid.uuid4())
 
-        if user:
-            user_html = f"👤 {esc(user)}"
-        else:
-            user_html = ""
+    sessions[token] = username
 
-        page = f"""
-<!DOCTYPE html>
+    save("sessions", sessions)
+
+    return token
+
+
+def add_warning(username, action, text):
+    warnings = load("warnings", [])
+
+    warnings.append({
+        "id": str(uuid.uuid4()),
+        "username": username,
+        "action": action,
+        "text": text,
+        "date": now()
+    })
+
+    save("warnings", warnings)
+
+
+def layout(title, body, username=None):
+    user = find_user(username) if username else None
+
+    icon = ""
+
+    if user:
+        icon = user.get("icon", "")
+
+    top = f"""
+    <div class="top">
+        <b>{esc(title)}</b>
+        <a href="/menu">⋮</a>
+    </div>
+    """
+
+    bottom = ""
+
+    if username:
+        bottom = """
+        <div class="bottom">
+            <a href="/channel">👤<span>マイチャンネル</span></a>
+            <a href="/">🏠<span>ホーム</span></a>
+            <a href="/mail">💬<span>メール</span></a>
+            <a href="/search">🔍<span>検索</span></a>
+        </div>
+        """
+
+    return f"""<!DOCTYPE html>
 <html lang="ja">
 <head>
-
 <meta charset="UTF-8">
-
-<meta name="viewport"
-      content="width=device-width, initial-scale=1.0">
-
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{esc(title)}</title>
 
 <style>
 
+:root {{
+    --bg:#f3f3f3;
+    --card:#ffffff;
+    --text:#222;
+    --border:#ddd;
+    --blue:#1976d2;
+}}
+
 * {{
-    box-sizing: border-box;
+    box-sizing:border-box;
 }}
 
 body {{
-    margin: 0;
-    padding-bottom: 75px;
-    background: #f2f2f2;
-    font-family: Arial, sans-serif;
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;
+    padding-bottom:80px;
 }}
 
-header {{
-    background: white;
-    padding: 15px;
-    border-bottom: 1px solid #ddd;
-    position: sticky;
-    top: 0;
-    z-index: 10;
+.top {{
+    position:sticky;
+    top:0;
+    z-index:5;
+    background:var(--card);
+    border-bottom:1px solid var(--border);
+    padding:15px;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
 }}
 
-header h1 {{
-    margin: 0;
+.top a {{
+    color:var(--text);
+    text-decoration:none;
+    font-size:28px;
 }}
 
-main {{
-    max-width: 700px;
-    margin: auto;
-    padding: 12px;
+.container {{
+    max-width:800px;
+    margin:auto;
+    padding:15px;
 }}
 
 .card {{
-    background: white;
-    border-radius: 12px;
-    padding: 14px;
-    margin-bottom: 12px;
-    box-shadow: 0 1px 4px #ddd;
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:14px;
+    padding:15px;
+    margin-bottom:15px;
 }}
 
-button,
-input,
-textarea,
-select {{
-    font-size: 16px;
+input, textarea, select {{
+    width:100%;
+    padding:12px;
+    margin:5px 0 10px;
+    border:1px solid var(--border);
+    border-radius:10px;
+    font-size:16px;
 }}
 
 button {{
-    padding: 9px 13px;
-    border: 0;
-    border-radius: 8px;
-    background: #eee;
+    border:0;
+    border-radius:10px;
+    padding:10px 15px;
+    background:var(--blue);
+    color:white;
+    font-size:15px;
+    cursor:pointer;
 }}
 
-.primary {{
-    background: #222;
-    color: white;
+button.gray {{
+    background:#777;
 }}
 
-.danger {{
-    background: #d33;
-    color: white;
+a {{
+    color:var(--blue);
 }}
 
-input,
-textarea,
-select {{
-    width: 100%;
-    padding: 10px;
-    margin: 5px 0 10px;
-    border: 1px solid #ccc;
-    border-radius: 8px;
+.bottom {{
+    position:fixed;
+    bottom:0;
+    left:0;
+    right:0;
+    height:70px;
+    background:var(--card);
+    border-top:1px solid var(--border);
+    display:flex;
+    justify-content:space-around;
+    z-index:10;
 }}
 
-textarea {{
-    min-height: 90px;
+.bottom a {{
+    text-decoration:none;
+    color:var(--text);
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    font-size:23px;
 }}
 
-.post-head {{
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
+.bottom span {{
+    font-size:11px;
+    margin-top:3px;
 }}
 
-.dots {{
-    font-size: 24px;
-    padding: 2px 9px;
+.user {{
+    display:flex;
+    align-items:center;
+    gap:10px;
 }}
 
-.menu-box {{
-    display: none;
-    background: #fff;
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    padding: 8px;
-    margin-top: 5px;
+.user-icon {{
+    width:48px;
+    height:48px;
+    border-radius:50%;
+    object-fit:cover;
+    background:#ddd;
 }}
 
-.menu-box:target {{
-    display: block;
+.post-actions {{
+    display:flex;
+    gap:8px;
+    margin-top:10px;
 }}
 
-.menu-box form {{
-    margin: 0;
+.post-actions form {{
+    display:inline;
 }}
 
-.file img {{
-    width: 100%;
-    max-height: 500px;
-    object-fit: contain;
-    border-radius: 8px;
+.message {{
+    max-width:75%;
+    padding:10px 13px;
+    border-radius:15px;
+    margin:7px 0;
 }}
 
-.file video {{
-    width: 100%;
-    max-height: 500px;
-    border-radius: 8px;
+.me {{
+    margin-left:auto;
+    background:#9fe7a8;
 }}
 
-.comment {{
-    background: #f5f5f5;
-    padding: 7px;
-    border-radius: 7px;
-    margin: 5px 0;
+.other {{
+    margin-right:auto;
+    background:var(--card);
+    border:1px solid var(--border);
 }}
 
-.small {{
-    color: #777;
-    font-size: 13px;
+.chat {{
+    min-height:60vh;
 }}
 
-.channel {{
-    display: block;
-    background: white;
-    padding: 15px;
-    margin-bottom: 10px;
-    border-radius: 10px;
-    color: black;
-    text-decoration: none;
+.chat-user {{
+    display:flex;
+    align-items:center;
+    gap:10px;
 }}
 
-nav {{
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: 65px;
-    background: white;
-    border-top: 1px solid #ccc;
-    display: flex;
-    justify-content: space-around;
-    z-index: 20;
+.chat-user img {{
+    width:42px;
+    height:42px;
+    border-radius:50%;
+    object-fit:cover;
 }}
 
-nav a {{
-    color: black;
-    text-decoration: none;
-    text-align: center;
-    padding-top: 8px;
+.chat-input {{
+    position:sticky;
+    bottom:70px;
+    background:var(--bg);
+    padding:10px 0;
 }}
 
-nav span {{
-    display: block;
-    font-size: 11px;
+.users {{
+    display:flex;
+    gap:12px;
+    overflow-x:auto;
+    padding:10px 0;
+}}
+
+.user-box {{
+    min-width:90px;
+    text-align:center;
+    text-decoration:none;
+    color:var(--text);
+}}
+
+.user-box img {{
+    width:60px;
+    height:60px;
+    border-radius:50%;
+    object-fit:cover;
+    display:block;
+    margin:auto;
+}}
+
+.preview {{
+    max-width:100%;
+    max-height:350px;
+    border-radius:10px;
+}}
+
+.warning {{
+    padding:10px;
+    border-left:4px solid #e53935;
+    background:#fff0f0;
+    margin:5px 0;
+}}
+
+body.dark {{
+    --bg:#111;
+    --card:#202020;
+    --text:#eee;
+    --border:#444;
 }}
 
 </style>
 
-</head>
+<script>
+function darkMode() {{
+    document.body.classList.add("dark");
+    localStorage.setItem("mode","dark");
+}}
 
+function lightMode() {{
+    document.body.classList.remove("dark");
+    localStorage.setItem("mode","light");
+}}
+
+window.addEventListener("load",function() {{
+    if(localStorage.getItem("mode") === "dark") {{
+        document.body.classList.add("dark");
+    }}
+}});
+</script>
+
+</head>
 <body>
 
-<header>
+{top}
 
-<h1>🌐 ウェブサーバー</h1>
-
-<div class="small">
-{user_html}
+<div class="container">
+{body}
 </div>
 
-</header>
-
-<main>
-
-{body}
-
-</main>
-
-<nav>
-
-<a href="/mychannels">
-👤
-<span>マイチャンネル</span>
-</a>
-
-<a href="/">
-🏠
-<span>ホーム</span>
-</a>
-
-<a href="/mail">
-💬
-<span>メール</span>
-</a>
-
-<a href="/search">
-🔍
-<span>検索</span>
-</a>
-
-</nav>
+{bottom}
 
 </body>
 </html>
 """
 
-        data = page.encode("utf-8")
 
-        self.send_response(200)
-        self.send_header(
-            "Content-Type",
-            "text/html; charset=utf-8"
-        )
-        self.send_header(
-            "Content-Length",
-            str(len(data))
-        )
+class Server(BaseHTTPRequestHandler):
+
+    def send_html(self, content, status=200, cookie=None):
+
+        data = content.encode("utf-8")
+
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+
         self.end_headers()
-
         self.wfile.write(data)
 
+    def redirect(self, path, cookie=None):
 
-    def redirect(self, url="/"):
         self.send_response(303)
-        self.send_header("Location", url)
+        self.send_header("Location", path)
+
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+
         self.end_headers()
 
+    def parse_post(self):
 
-    def registration(self):
-
-        body = """
-<div class="card">
-
-<h2>はじめまして！</h2>
-
-<p>使う名前を入力してください。</p>
-
-<form method="POST"
-      action="/setname">
-
-<input
-name="username"
-placeholder="名前"
-maxlength="30"
-required>
-
-<button class="primary">
-登録する
-</button>
-
-</form>
-
-</div>
-"""
-
-        self.html(body, "名前登録")
-
-
-    def post_form(self, channel=""):
-
-        username = get_user(self)
-
-        channels = load("channels", {})
-        mine = channels.get(username, [])
-
-        options = ""
-
-        for ch in mine:
-
-            selected = ""
-
-            if ch == channel:
-                selected = "selected"
-
-            options += f"""
-<option {selected}>
-{esc(ch)}
-</option>
-"""
-
-        if not options:
-            options = """
-<option>メインチャンネル</option>
-"""
-
-        return f"""
-<div class="card">
-
-<h2>投稿する</h2>
-
-<form method="POST"
-      action="/post"
-      enctype="multipart/form-data">
-
-<label>チャンネル</label>
-
-<select name="channel">
-{options}
-</select>
-
-<textarea
-name="text"
-placeholder="何を投稿しますか？"></textarea>
-
-<input
-type="file"
-name="file">
-
-<button class="primary">
-投稿する
-</button>
-
-</form>
-
-</div>
-"""
-
-
-    def file_html(self, filename):
-
-        if not filename:
-            return ""
-
-        url = "/uploads/" + filename
-
-        ext = os.path.splitext(filename)[1].lower()
-
-        if ext in [
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".gif",
-            ".webp"
-        ]:
-
-            return f"""
-<div class="file">
-<img src="{url}">
-</div>
-"""
-
-        if ext in [
-            ".mp4",
-            ".webm",
-            ".ogg",
-            ".mov"
-        ]:
-
-            return f"""
-<div class="file">
-
-<video controls playsinline>
-
-<source src="{url}">
-
-</video>
-
-</div>
-"""
-
-        return f"""
-<p>
-📎
-<a href="{url}" download>
-{esc(filename)}
-</a>
-</p>
-"""
-
-
-    def post_html(self, post):
-
-        username = get_user(self)
-
-        author = post.get("username", "")
-
-        post_id = post.get("id", "")
-
-        channel = post.get("channel", "")
-
-        comments = post.get("comments", [])
-
-        menu = ""
-
-        # 投稿者本人だけ⋮を表示
-        if author == username:
-
-            menu = f"""
-
-<div>
-
-<a
-href="#menu-{post_id}"
-class="dots">
-⋮
-</a>
-
-<div
-id="menu-{post_id}"
-class="menu-box">
-
-<form method="POST"
-action="/delete_post"
-onsubmit="return confirm('この投稿を削除しますか？');">
-
-<input
-type="hidden"
-name="id"
-value="{esc(post_id)}">
-
-<button class="danger">
-投稿を削除
-</button>
-
-</form>
-
-</div>
-
-</div>
-"""
-
-        comments_html = ""
-
-        for c in comments:
-
-            comments_html += f"""
-<div class="comment">
-
-<b>{esc(c.get("username", ""))}</b>
-
-<br>
-
-{esc(c.get("text", ""))}
-
-</div>
-"""
-
-        channel_html = ""
-
-        if channel:
-
-            channel_html = f"""
-<div class="small">
-
-📺
-<a href="/channel/{esc(author)}/{esc(channel)}">
-
-{esc(channel)}
-
-</a>
-
-</div>
-"""
-
-        return f"""
-
-<div class="card">
-
-<div class="post-head">
-
-<div>
-
-<b>{esc(author)}</b>
-
-<div class="small">
-{esc(post.get("time", ""))}
-</div>
-
-{channel_html}
-
-</div>
-
-{menu}
-
-</div>
-
-<p>
-{esc(post.get("text", "")).replace(chr(10), "<br>")}
-</p>
-
-{self.file_html(post.get("filename", ""))}
-
-<form method="POST"
-action="/like"
-style="display:inline">
-
-<input
-type="hidden"
-name="id"
-value="{esc(post_id)}">
-
-<button>
-👍 {post.get("likes", 0)}
-</button>
-
-</form>
-
-<form method="POST"
-action="/dislike"
-style="display:inline">
-
-<input
-type="hidden"
-name="id"
-value="{esc(post_id)}">
-
-<button>
-👎 {post.get("dislikes", 0)}
-</button>
-
-</form>
-
-<hr>
-
-<b>コメント</b>
-
-{comments_html}
-
-<form method="POST"
-action="/comment">
-
-<input
-type="hidden"
-name="id"
-value="{esc(post_id)}">
-
-<input
-name="text"
-placeholder="コメントを書く"
-required>
-
-<button>
-送信
-</button>
-
-</form>
-
-</div>
-"""
-
-
-    def home(self):
-
-        posts = load("posts", [])
-
-        content = self.post_form()
-
-        content += """
-<div class="card">
-<h2>🏠 ホーム</h2>
-</div>
-"""
-
-        for post in reversed(posts):
-            content += self.post_html(post)
-
-        self.html(content)
-
-
-    def my_channels(self):
-
-        username = get_user(self)
-
-        channels = load("channels", {})
-
-        mine = channels.get(username, [])
-
-        content = f"""
-<div class="card">
-
-<h2>👤 マイチャンネル</h2>
-
-<p>
-{esc(username)}
-</p>
-
-<h3>チャンネルを作る</h3>
-
-<form method="POST"
-action="/create_channel">
-
-<input
-name="channel"
-placeholder="チャンネル名"
-required
-maxlength="50">
-
-<button class="primary">
-作成
-</button>
-
-</form>
-
-</div>
-"""
-
-        for ch in mine:
-
-            content += f"""
-<a class="channel"
-href="/channel/{esc(username)}/{esc(ch)}">
-
-📺 {esc(ch)}
-
-</a>
-"""
-
-        self.html(content, "マイチャンネル")
-
-
-    def channel_page(self, owner, channel):
-
-        channels = load("channels", {})
-
-        if channel not in channels.get(owner, []):
-
-            self.html(
-                "<div class='card'>チャンネルがありません。</div>"
-            )
-
-            return
-
-        username = get_user(self)
-
-        follows = load("follows", {})
-
-        following = owner in follows.get(username, [])
-
-        if owner == username:
-
-            follow = ""
-
-            delete = f"""
-<form method="POST"
-action="/delete_channel"
-onsubmit="return confirm('このチャンネルを削除しますか？');">
-
-<input
-type="hidden"
-name="channel"
-value="{esc(channel)}">
-
-<button class="danger">
-⋮ チャンネルを削除
-</button>
-
-</form>
-"""
-
-        else:
-
-            if following:
-
-                follow = f"""
-<form method="POST"
-action="/unfollow">
-
-<input
-type="hidden"
-name="target"
-value="{esc(owner)}">
-
-<button>
-フォロー中
-</button>
-
-</form>
-"""
-
-            else:
-
-                follow = f"""
-<form method="POST"
-action="/follow">
-
-<input
-type="hidden"
-name="target"
-value="{esc(owner)}">
-
-<button class="primary">
-フォローする
-</button>
-
-</form>
-"""
-
-            delete = ""
-
-        content = f"""
-<div class="card">
-
-<h2>📺 {esc(channel)}</h2>
-
-<p>
-投稿者：{esc(owner)}
-</p>
-
-{follow}
-
-<br>
-
-{delete}
-
-</div>
-
-{self.post_form(channel)}
-"""
-
-        posts = load("posts", [])
-
-        for post in reversed(posts):
-
-            if (
-                post.get("username") == owner
-                and post.get("channel") == channel
-            ):
-
-                content += self.post_html(post)
-
-        self.html(content, channel)
-
-
-    def mail(self):
-
-        username = get_user(self)
-
-        follows = load("follows", {})
-
-        content = """
-<div class="card">
-
-<h2>💬 メール</h2>
-
-<p>
-相互フォローした人とメッセージできます。
-</p>
-
-</div>
-"""
-
-        for target in follows.get(username, []):
-
-            if username in follows.get(target, []):
-
-                content += f"""
-<a class="channel"
-href="/conversation/{esc(target)}">
-
-💬 {esc(target)}
-
-</a>
-"""
-
-        self.html(content, "メール")
-
-
-    def conversation(self, target):
-
-        username = get_user(self)
-
-        follows = load("follows", {})
-
-        if not (
-            target in follows.get(username, [])
-            and username in follows.get(target, [])
-        ):
-
-            self.html(
-                "<div class='card'>相互フォローではありません。</div>",
-                "メール"
-            )
-
-            return
-
-        messages = load("messages", [])
-
-        content = f"""
-<div class="card">
-
-<h2>💬 {esc(target)}</h2>
-
-</div>
-"""
-
-        for m in messages:
-
-            if (
-                (
-                    m.get("from") == username
-                    and m.get("to") == target
-                )
-                or
-                (
-                    m.get("from") == target
-                    and m.get("to") == username
-                )
-            ):
-
-                content += f"""
-<div class="card">
-
-<b>{esc(m.get("from", ""))}</b>
-
-<p>
-{esc(m.get("text", ""))}
-</p>
-
-<div class="small">
-{esc(m.get("time", ""))}
-</div>
-
-</div>
-"""
-
-        content += f"""
-<div class="card">
-
-<form method="POST"
-action="/send_message">
-
-<input
-type="hidden"
-name="target"
-value="{esc(target)}">
-
-<textarea
-name="text"
-placeholder="メッセージ"></textarea>
-
-<button class="primary">
-送信
-</button>
-
-</form>
-
-</div>
-"""
-
-        self.html(content, "メール")
-
-
-    def search(self, q):
-
-        content = f"""
-<div class="card">
-
-<h2>🔍 検索</h2>
-
-<form method="GET"
-action="/search">
-
-<input
-name="q"
-value="{esc(q)}"
-placeholder="人・チャンネル・投稿・ファイル">
-
-<button class="primary">
-検索
-</button>
-
-</form>
-
-</div>
-"""
-
-        if q:
-
-            posts = load("posts", [])
-            users = load("users", [])
-            channels = load("channels", {})
-
-            for user in users:
-
-                if q.lower() in user.lower():
-
-                    content += f"""
-<div class="card">
-
-👤
-<a href="/channel/{esc(user)}/メインチャンネル">
-
-{esc(user)}
-
-</a>
-
-</div>
-"""
-
-            for owner, chs in channels.items():
-
-                for ch in chs:
-
-                    if (
-                        q.lower() in ch.lower()
-                        or q.lower() in owner.lower()
-                    ):
-
-                        content += f"""
-<div class="card">
-
-📺
-<a href="/channel/{esc(owner)}/{esc(ch)}">
-
-{esc(ch)}
-
-</a>
-
-<div class="small">
-{esc(owner)}
-</div>
-
-</div>
-"""
-
-            for post in posts:
-
-                text = post.get("text", "")
-                author = post.get("username", "")
-                filename = post.get("filename", "")
-
-                if (
-                    q.lower() in text.lower()
-                    or q.lower() in author.lower()
-                    or q.lower() in filename.lower()
-                ):
-
-                    content += self.post_html(post)
-
-        self.html(content, "検索")
-
-
-    def parse_form(self):
-
-        length = int(
-            self.headers.get(
-                "Content-Length",
-                "0"
-            )
-        )
+        length = int(self.headers.get("Content-Length", "0"))
 
         body = self.rfile.read(length)
 
-        content_type = self.headers.get(
-            "Content-Type",
-            ""
-        )
+        content_type = self.headers.get("Content-Type", "")
 
-        if content_type.startswith(
-            "multipart/form-data"
-        ):
+        if content_type.startswith("application/x-www-form-urlencoded"):
 
-            header = (
-                b"Content-Type: "
-                + content_type.encode()
-                + b"\r\n\r\n"
-            )
+            from urllib.parse import parse_qs
 
-            msg = BytesParser(
-                policy=default
-            ).parsebytes(
-                header + body
-            )
+            parsed = parse_qs(body.decode("utf-8"))
 
-            fields = {}
-            files = {}
+            return {
+                k: v[0]
+                for k, v in parsed.items()
+            }, None
 
-            for part in msg.iter_parts():
-
-                name = part.get_param(
-                    "name",
-                    header="content-disposition"
-                )
-
-                filename = part.get_filename()
-
-                data = part.get_payload(
-                    decode=True
-                ) or b""
-
-                if filename:
-
-                    files[name] = (
-                        safe_filename(filename),
-                        data
-                    )
-
-                else:
-
-                    fields[name] = data.decode(
-                        "utf-8",
-                        "replace"
-                    )
-
-            return fields, files
-
-        data = parse_qs(
-            body.decode(
-                "utf-8",
-                "replace"
-            )
-        )
-
-        return {
-            k: v[0]
-            for k, v in data.items()
-        }, {}
-
+        return {}, body
 
     def do_GET(self):
 
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
 
-        query = parse_qs(
-            urlparse(self.path).query
-        )
+        user = session_user(self)
 
-        username = get_user(self)
-
-        if not username:
-
-            return self.registration()
-
-        if path == "/":
-            return self.home()
-
-        if path == "/mychannels":
-            return self.my_channels()
-
-        if path == "/mail":
-            return self.mail()
-
-        if path == "/search":
-
-            q = query.get(
-                "q",
-                [""]
-            )[0]
-
-            return self.search(q)
-
-        if path.startswith("/conversation/"):
-
-            target = path[
-                len("/conversation/"):
-            ]
-
-            return self.conversation(target)
-
-        if path.startswith("/channel/"):
-
-            parts = path.split("/")
-
-            if len(parts) >= 4:
-
-                owner = parts[2]
-                channel = "/".join(parts[3:])
-
-                return self.channel_page(
-                    owner,
-                    channel
-                )
-
+        # アップロード画像
         if path.startswith("/uploads/"):
 
-            filename = os.path.basename(
-                path[len("/uploads/"):]
-            )
+            filename = os.path.basename(path[len("/uploads/"):])
 
-            filepath = os.path.join(
-                UPLOAD_DIR,
-                filename
-            )
+            filepath = os.path.join(UPLOADS, filename)
 
             if not os.path.exists(filepath):
-
                 self.send_error(404)
                 return
 
-            mime = mimetypes.guess_type(
-                filepath
-            )[0]
-
-            if not mime:
-                mime = "application/octet-stream"
-
-            size = os.path.getsize(filepath)
-
-            self.send_response(200)
-
-            self.send_header(
-                "Content-Type",
-                mime
-            )
-
-            self.send_header(
-                "Content-Length",
-                str(size)
-            )
-
-            self.end_headers()
+            mime = mimetypes.guess_type(filepath)[0] or "application/octet-stream"
 
             with open(filepath, "rb") as f:
+                data = f.read()
 
-                while True:
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
 
-                    data = f.read(65536)
+            return
 
-                    if not data:
-                        break
+        # ログイン
+        if not user:
 
-                    self.wfile.write(data)
+            if path == "/register":
+
+                body = """
+                <div class="card">
+                    <h2>新規登録</h2>
+
+                    <form method="post" action="/register">
+
+                        <input name="username"
+                               placeholder="アカウント名"
+                               required>
+
+                        <input type="password"
+                               name="password"
+                               placeholder="パスワード"
+                               required>
+
+                        <input name="icon"
+                               placeholder="アイコン画像URL（任意）">
+
+                        <button>登録する</button>
+
+                    </form>
+                </div>
+
+                <div class="card">
+                    <a href="/login">ログインはこちら</a>
+                </div>
+                """
+
+                self.send_html(layout("新規登録", body))
+                return
+
+            body = """
+            <div class="card">
+
+                <h2>ログイン</h2>
+
+                <form method="post" action="/login">
+
+                    <input name="username"
+                           placeholder="アカウント名"
+                           required>
+
+                    <input type="password"
+                           name="password"
+                           placeholder="パスワード"
+                           required>
+
+                    <button>ログイン</button>
+
+                </form>
+
+            </div>
+
+            <div class="card">
+                <a href="/register">新規登録</a>
+            </div>
+            """
+
+            self.send_html(layout("ログイン", body))
+            return
+
+        # ホーム
+        if path == "/":
+
+            posts = load("posts", [])
+
+            body = ""
+
+            body += """
+            <div class="card">
+                <h2>ホーム</h2>
+
+                <form method="post" action="/post">
+
+                    <textarea name="text"
+                              placeholder="何を投稿しますか？"></textarea>
+
+                    <button>投稿する</button>
+
+                </form>
+            </div>
+            """
+
+            warnings = load("warnings", [])
+
+            if warnings:
+
+                body += """
+                <div class="card">
+                    <h3>⚠️ 最近の活動</h3>
+                """
+
+                for w in warnings[-5:][::-1]:
+
+                    body += f"""
+                    <div class="warning">
+                        {esc(w.get("username"))}さんが
+                        {esc(w.get("action"))}しました
+                    </div>
+                    """
+
+                body += "</div>"
+
+            for p in reversed(posts):
+
+                liked = user in p.get("liked_by", [])
+                disliked = user in p.get("disliked_by", [])
+
+                body += f"""
+                <div class="card">
+
+                    <div class="user">
+                        <div>
+                            <b>{esc(p.get("username",""))}</b><br>
+                            <small>{esc(p.get("date",""))}</small>
+                        </div>
+                    </div>
+
+                    <p>{esc(p.get("text",""))}</p>
+
+                    <div class="post-actions">
+
+                        <form method="post" action="/like">
+                            <input type="hidden"
+                                   name="id"
+                                   value="{esc(p.get("id"))}">
+                            <button>{"👍" if not liked else "👍 解除"}</button>
+                        </form>
+
+                        <form method="post" action="/dislike">
+                            <input type="hidden"
+                                   name="id"
+                                   value="{esc(p.get("id"))}">
+                            <button class="gray">
+                                {"👎" if not disliked else "👎 解除"}
+                            </button>
+                        </form>
+
+                    </div>
+
+                </div>
+                """
+
+            self.send_html(layout("ホーム", body, user))
+            return
+
+        # メール一覧
+        if path == "/mail":
+
+            users = load("users", [])
+
+            search = query.get("q", [""])[0].lower()
+
+            body = """
+            <div class="card">
+
+                <form method="get" action="/mail">
+
+                    <input name="q"
+                           value="{0}"
+                           placeholder="🔍 メールを検索">
+
+                </form>
+
+            </div>
+
+            <div class="users">
+            """.format(esc(search))
+
+            for u in users:
+
+                name = u.get("username", "")
+
+                if name == user:
+                    continue
+
+                if search and search not in name.lower():
+                    continue
+
+                icon = u.get("icon", "")
+
+                if icon:
+                    image = f'<img src="{esc(icon)}">'
+                else:
+                    image = '<img src="/uploads/default-user.png">'
+
+                body += f"""
+                <a class="user-box"
+                   href="/chat?user={esc(name)}">
+
+                    {image}
+
+                    <div>{esc(name)}</div>
+
+                </a>
+                """
+
+            body += "</div>"
+
+            body += """
+            <div class="card">
+                <h3>💬 メール</h3>
+                <p>話したい相手を選んでください。</p>
+            </div>
+            """
+
+            self.send_html(layout("メール", body, user))
+            return
+
+        # チャット
+        if path == "/chat":
+
+            target = query.get("user", [""])[0]
+
+            target_user = find_user(target)
+
+            if not target_user:
+
+                self.send_html(
+                    layout(
+                        "チャット",
+                        '<div class="card">ユーザーが見つかりません。</div>',
+                        user
+                    )
+                )
+
+                return
+
+            messages = load("messages", [])
+
+            body = f"""
+            <div class="card">
+
+                <div class="chat-user">
+
+                    <img src="{esc(target_user.get("icon",""))}"
+                         onerror="this.style.display='none'">
+
+                    <b>{esc(target)}</b>
+
+                </div>
+
+            </div>
+
+            <div class="chat">
+            """
+
+            chat_messages = []
+
+            for m in messages:
+
+                a = m.get("from")
+                b = m.get("to")
+
+                if (a == user and b == target) or \
+                   (a == target and b == user):
+
+                    chat_messages.append(m)
+
+            for m in chat_messages:
+
+                mine = m.get("from") == user
+
+                cls = "me" if mine else "other"
+
+                mtype = m.get("type", "text")
+
+                if mtype == "image":
+
+                    content = f"""
+                    <img class="preview"
+                         src="/uploads/{esc(m.get("filename",""))}">
+                    """
+
+                elif mtype == "gif":
+
+                    content = f"""
+                    <img class="preview"
+                         src="/uploads/{esc(m.get("filename",""))}">
+                    """
+
+                else:
+
+                    content = esc(m.get("text", ""))
+
+                body += f"""
+                <div class="message {cls}">
+
+                    {content}
+
+                    <br>
+                    <small>{esc(m.get("date",""))}</small>
+
+                </div>
+                """
+
+            body += """
+            </div>
+
+            <div class="chat-input card">
+
+                <form method="post"
+                      action="/send_message"
+                      enctype="application/x-www-form-urlencoded">
+
+                    <input type="hidden"
+                           name="to"
+                           value="{TARGET}">
+
+                    <input name="text"
+                           placeholder="メッセージを入力">
+
+                    <button>送信</button>
+
+                </form>
+
+                <br>
+
+                <form method="post"
+                      action="/send_image"
+                      enctype="multipart/form-data">
+
+                    <input type="hidden"
+                           name="to"
+                           value="{TARGET}">
+
+                    <input type="file"
+                           name="file"
+                           accept="image/*,.gif"
+                           required>
+
+                    <button>🖼️ 画像・GIFを送る</button>
+
+                </form>
+
+            </div>
+            """.replace("{TARGET}", html.escape(target))
+
+            self.send_html(layout(target, body, user))
+            return
+
+        # チャンネル
+        if path == "/channel":
+
+            u = find_user(user)
+
+            body = f"""
+            <div class="card">
+
+                <div class="user">
+
+                    <img class="user-icon"
+                         src="{esc(u.get("icon",""))}"
+                         onerror="this.style.display='none'">
+
+                    <div>
+                        <h2>{esc(user)}</h2>
+                        <a href="/studio">YouTube Studio風 管理画面</a>
+                    </div>
+
+                </div>
+
+            </div>
+            """
+
+            self.send_html(layout("マイチャンネル", body, user))
+            return
+
+        # Studio
+        if path == "/studio":
+
+            posts = load("posts", [])
+
+            count = sum(
+                1 for p in posts
+                if p.get("username") == user
+            )
+
+            body = f"""
+            <div class="card">
+
+                <h2>📊 チャンネル管理</h2>
+
+                <p>投稿数：{count}</p>
+
+                <a href="/">ホームを見る</a>
+
+            </div>
+            """
+
+            self.send_html(layout("チャンネル管理", body, user))
+            return
+
+        # 検索
+        if path == "/search":
+
+            q = query.get("q", [""])[0].lower()
+
+            users = load("users", [])
+
+            body = """
+            <div class="card">
+
+                <form method="get" action="/search">
+
+                    <input name="q"
+                           placeholder="🔍 検索"
+                           value="{0}">
+
+                    <button>検索</button>
+
+                </form>
+
+            </div>
+            """.format(esc(q))
+
+            if q:
+
+                for u in users:
+
+                    if q in u.get("username", "").lower():
+
+                        body += f"""
+                        <div class="card">
+                            <a href="/chat?user={esc(u.get("username"))}">
+                                👤 {esc(u.get("username"))}
+                            </a>
+                        </div>
+                        """
+
+            self.send_html(layout("検索", body, user))
+            return
+
+        # メニュー
+        if path == "/menu":
+
+            body = """
+            <div class="card">
+
+                <h2>メニュー</h2>
+
+                <p><a href="/settings">⚙️ 設定</a></p>
+
+                <p><a href="/warnings">⚠️ 警告</a></p>
+
+                <p><a href="/logout">ログアウト</a></p>
+
+            </div>
+            """
+
+            self.send_html(layout("メニュー", body, user))
+            return
+
+        # 設定
+        if path == "/settings":
+
+            body = """
+            <div class="card">
+
+                <h2>⚙️ 設定</h2>
+
+                <h3>画面</h3>
+
+                <button onclick="lightMode()">
+                    ☀️ ライト
+                </button>
+
+                <button onclick="darkMode()">
+                    🌙 ダーク
+                </button>
+
+                <h3>明るさ</h3>
+
+                <input type="range"
+                       min="50"
+                       max="150"
+                       value="100"
+                       onchange="
+                       document.body.style.filter=
+                       'brightness('+this.value+'%)'
+                       ">
+
+            </div>
+            """
+
+            self.send_html(layout("設定", body, user))
+            return
+
+        # 警告
+        if path == "/warnings":
+
+            warnings = load("warnings", [])
+
+            body = """
+            <div class="card">
+                <h2>⚠️ 警告・活動履歴</h2>
+            """
+
+            for w in reversed(warnings):
+
+                body += f"""
+                <div class="warning">
+
+                    <b>{esc(w.get("username"))}</b>
+
+                    {esc(w.get("action"))}
+
+                    <br>
+
+                    {esc(w.get("text",""))}
+
+                    <br>
+
+                    <small>{esc(w.get("date",""))}</small>
+
+                </div>
+                """
+
+            body += "</div>"
+
+            self.send_html(layout("警告", body, user))
+            return
+
+        # ログアウト
+        if path == "/logout":
+
+            token = None
+
+            cookie = self.headers.get("Cookie", "")
+
+            for item in cookie.split(";"):
+
+                item = item.strip()
+
+                if item.startswith("session="):
+                    token = item.split("=",1)[1]
+
+            if token:
+
+                sessions = load("sessions", {})
+
+                sessions.pop(token, None)
+
+                save("sessions", sessions)
+
+            self.redirect("/login", "session=; Max-Age=0")
 
             return
 
         self.send_error(404)
-
 
     def do_POST(self):
 
         path = urlparse(self.path).path
 
-        username = get_user(self)
+        user = session_user(self)
 
-        fields, files = self.parse_form()
+        data, raw = self.parse_post()
 
-        if path == "/setname":
+        # 登録
+        if path == "/register":
 
-            new_name = fields.get(
-                "username",
-                ""
-            ).strip()
+            username = data.get("username", "").strip()
+            password = data.get("password", "").strip()
+            icon = data.get("icon", "").strip()
 
-            if not new_name:
-                return self.registration()
+            if not username or not password:
+
+                self.send_html(
+                    layout(
+                        "エラー",
+                        '<div class="card">入力してください。</div>'
+                    )
+                )
+
+                return
+
+            if find_user(username):
+
+                self.send_html(
+                    layout(
+                        "エラー",
+                        '<div class="card">その名前はすでに使われています。</div>'
+                    )
+                )
+
+                return
 
             users = load("users", [])
 
-            if new_name not in users:
-                users.append(new_name)
+            users.append({
+                "username": username,
+                "password": password_hash(password),
+                "icon": icon
+            })
 
             save("users", users)
 
-            channels = load("channels", {})
+            token = new_session(username)
 
-            if new_name not in channels:
-
-                channels[new_name] = [
-                    "メインチャンネル"
-                ]
-
-            save("channels", channels)
-
-            self.send_response(303)
-
-            self.send_header(
-                "Location",
-                "/"
+            self.redirect(
+                "/",
+                f"session={token}; Path=/; HttpOnly"
             )
-
-            self.send_header(
-                "Set-Cookie",
-                "username="
-                + new_name
-                + "; Path=/"
-            )
-
-            self.end_headers()
 
             return
 
+        # ログイン
+        if path == "/login":
 
-        if not username:
-            return self.redirect("/setname")
+            username = data.get("username", "")
+            password = data.get("password", "")
 
+            u = find_user(username)
 
+            if not u or u.get("password") != password_hash(password):
+
+                self.send_html(
+                    layout(
+                        "ログインエラー",
+                        '<div class="card">名前またはパスワードが違います。</div>'
+                    )
+                )
+
+                return
+
+            token = new_session(username)
+
+            self.redirect(
+                "/",
+                f"session={token}; Path=/; HttpOnly"
+            )
+
+            return
+
+        if not user:
+
+            self.redirect("/login")
+            return
+
+        # 投稿
         if path == "/post":
 
-            text = fields.get(
-                "text",
-                ""
-            ).strip()
-
-            channel = fields.get(
-                "channel",
-                "メインチャンネル"
-            ).strip()
-
-            filename = ""
-
-            if "file" in files:
-
-                original, data = files["file"]
-
-                if data:
-
-                    filename = (
-                        uuid.uuid4().hex
-                        + "_"
-                        + original
-                    )
-
-                    with open(
-                        os.path.join(
-                            UPLOAD_DIR,
-                            filename
-                        ),
-                        "wb"
-                    ) as f:
-
-                        f.write(data)
-
-            posts = load("posts", [])
-
-            posts.append({
-
-                "id": uuid.uuid4().hex,
-
-                "username": username,
-
-                "channel": channel,
-
-                "text": text,
-
-                "filename": filename,
-
-                "time": now(),
-
-                "likes": 0,
-
-                "dislikes": 0,
-
-                "liked_users": [],
-
-                "disliked_users": [],
-
-                "comments": []
-
-            })
-
-            save("posts", posts)
-
-            return self.redirect("/")
-
-
-        if path == "/like":
-
-            post_id = fields.get(
-                "id",
-                ""
-            )
-
-            posts = load("posts", [])
-
-            for post in posts:
-
-                if post.get("id") == post_id:
-
-                    liked = post.setdefault(
-                        "liked_users",
-                        []
-                    )
-
-                    disliked = post.setdefault(
-                        "disliked_users",
-                        []
-                    )
-
-                    if username not in liked:
-
-                        liked.append(username)
-
-                        if username in disliked:
-
-                            disliked.remove(username)
-
-                        post["likes"] = len(liked)
-                        post["dislikes"] = len(disliked)
-
-                    break
-
-            save("posts", posts)
-
-            return self.redirect("/")
-
-
-        if path == "/dislike":
-
-            post_id = fields.get(
-                "id",
-                ""
-            )
-
-            posts = load("posts", [])
-
-            for post in posts:
-
-                if post.get("id") == post_id:
-
-                    disliked = post.setdefault(
-                        "disliked_users",
-                        []
-                    )
-
-                    liked = post.setdefault(
-                        "liked_users",
-                        []
-                    )
-
-                    if username not in disliked:
-
-                        disliked.append(username)
-
-                        if username in liked:
-                            liked.remove(username)
-
-                    post["likes"] = len(liked)
-                    post["dislikes"] = len(disliked)
-
-                    break
-
-            save("posts", posts)
-
-            return self.redirect("/")
-
-
-        if path == "/comment":
-
-            post_id = fields.get(
-                "id",
-                ""
-            )
-
-            text = fields.get(
-                "text",
-                ""
-            ).strip()
+            text = data.get("text", "").strip()
 
             if text:
 
                 posts = load("posts", [])
 
-                for post in posts:
-
-                    if post.get("id") == post_id:
-
-                        post.setdefault(
-                            "comments",
-                            []
-                        ).append({
-
-                            "username": username,
-
-                            "text": text,
-
-                            "time": now()
-
-                        })
-
-                        break
+                posts.append({
+                    "id": str(uuid.uuid4()),
+                    "username": user,
+                    "text": text,
+                    "date": now(),
+                    "liked_by": [],
+                    "disliked_by": []
+                })
 
                 save("posts", posts)
 
-            return self.redirect("/")
+                add_warning(user, "投稿", text)
 
+            self.redirect("/")
+            return
 
-        if path == "/delete_post":
+        # いいね・低評価
+        if path in ["/like", "/dislike"]:
 
-            post_id = fields.get(
-                "id",
-                ""
-            )
+            pid = data.get("id", "")
 
             posts = load("posts", [])
 
-            new_posts = []
+            for p in posts:
 
-            for post in posts:
+                if p.get("id") != pid:
+                    continue
 
-                if post.get("id") == post_id:
+                p.setdefault("liked_by", [])
+                p.setdefault("disliked_by", [])
 
-                    # 投稿者本人だけ削除できる
-                    if post.get("username") == username:
+                if path == "/like":
 
-                        filename = post.get(
-                            "filename",
-                            ""
-                        )
-
-                        if filename:
-
-                            filepath = os.path.join(
-                                UPLOAD_DIR,
-                                os.path.basename(filename)
-                            )
-
-                            if os.path.exists(filepath):
-                                os.remove(filepath)
-
-                        continue
-
-                new_posts.append(post)
-
-            save("posts", new_posts)
-
-            return self.redirect("/")
-
-
-        if path == "/create_channel":
-
-            channel = fields.get(
-                "channel",
-                ""
-            ).strip()
-
-            if channel:
-
-                channels = load("channels", {})
-
-                channels.setdefault(
-                    username,
-                    []
-                )
-
-                if channel not in channels[username]:
-
-                    channels[username].append(
-                        channel
-                    )
-
-                save("channels", channels)
-
-            return self.redirect(
-                "/mychannels"
-            )
-
-
-        if path == "/delete_channel":
-
-            channel = fields.get(
-                "channel",
-                ""
-            )
-
-            channels = load("channels", {})
-
-            if channel in channels.get(
-                username,
-                []
-            ):
-
-                channels[username].remove(
-                    channel
-                )
-
-                save("channels", channels)
-
-                posts = load("posts", [])
-
-                new_posts = []
-
-                for post in posts:
-
-                    if (
-                        post.get("username") == username
-                        and post.get("channel") == channel
-                    ):
-
-                        filename = post.get(
-                            "filename",
-                            ""
-                        )
-
-                        if filename:
-
-                            filepath = os.path.join(
-                                UPLOAD_DIR,
-                                os.path.basename(filename)
-                            )
-
-                            if os.path.exists(filepath):
-                                os.remove(filepath)
+                    if user in p["liked_by"]:
+                        p["liked_by"].remove(user)
 
                     else:
+                        p["liked_by"].append(user)
 
-                        new_posts.append(post)
+                        if user in p["disliked_by"]:
+                            p["disliked_by"].remove(user)
 
-                save("posts", new_posts)
+                else:
 
-            return self.redirect(
-                "/mychannels"
-            )
+                    if user in p["disliked_by"]:
+                        p["disliked_by"].remove(user)
 
+                    else:
+                        p["disliked_by"].append(user)
 
-        if path == "/follow":
+                        if user in p["liked_by"]:
+                            p["liked_by"].remove(user)
 
-            target = fields.get(
-                "target",
-                ""
-            )
+                break
 
-            follows = load("follows", {})
+            save("posts", posts)
 
-            follows.setdefault(
-                username,
-                []
-            )
+            self.redirect("/")
+            return
 
-            if (
-                target
-                and target != username
-                and target not in follows[username]
-            ):
-
-                follows[username].append(
-                    target
-                )
-
-            save("follows", follows)
-
-            return self.redirect("/")
-
-
-        if path == "/unfollow":
-
-            target = fields.get(
-                "target",
-                ""
-            )
-
-            follows = load("follows", {})
-
-            if target in follows.get(
-                username,
-                []
-            ):
-
-                follows[username].remove(
-                    target
-                )
-
-            save("follows", follows)
-
-            return self.redirect("/")
-
-
+        # テキストメール
         if path == "/send_message":
 
-            target = fields.get(
-                "target",
-                ""
-            )
+            target = data.get("to", "")
+            text = data.get("text", "").strip()
 
-            text = fields.get(
-                "text",
-                ""
-            ).strip()
+            if target and text:
 
-            follows = load("follows", {})
-
-            mutual = (
-                target in follows.get(username, [])
-                and
-                username in follows.get(target, [])
-            )
-
-            if mutual and text:
-
-                messages = load(
-                    "messages",
-                    []
-                )
+                messages = load("messages", [])
 
                 messages.append({
-
-                    "from": username,
-
+                    "id": str(uuid.uuid4()),
+                    "from": user,
                     "to": target,
-
+                    "type": "text",
                     "text": text,
-
-                    "time": now()
-
+                    "date": now()
                 })
 
-                save(
-                    "messages",
-                    messages
+                save("messages", messages)
+
+                add_warning(
+                    user,
+                    "メール送信",
+                    f"{target}さんへメッセージ"
                 )
 
-            return self.redirect(
-                "/conversation/"
-                + target
+            self.redirect(
+                "/chat?user=" + target
             )
 
-        self.send_error(404)
+            return
+
+        # 画像/GIF送信
+        if path == "/send_image":
+
+            content_type = self.headers.get("Content-Type", "")
+
+            if not content_type.startswith("multipart/form-data"):
+
+                self.redirect("/mail")
+                return
+
+            boundary = ""
+
+            for part in content_type.split(";"):
+
+                part = part.strip()
+
+                if part.startswith("boundary="):
+                    boundary = part.split("=",1)[1]
+
+            boundary = boundary.encode()
+
+            raw_body = raw
+
+            sections = raw_body.split(b"--" + boundary)
+
+            target = ""
+
+            filename = ""
+            filedata = b""
+
+            for section in sections:
+
+                if b'name="to"' in section:
+
+                    try:
+                        target = section.split(b"\r\n\r\n",1)[1].strip().decode()
+                    except:
+                        pass
+
+                if b'name="file"' in section:
+
+                    header_end = section.find(b"\r\n\r\n")
+
+                    if header_end == -1:
+                        continue
+
+                    headers = section[:header_end].decode(
+                        "utf-8",
+                        errors="ignore"
+                    )
+
+                    content = section[
+                        header_end + 4:
+                    ]
+
+                    content = content.rstrip(b"\r\n-")
+
+                    marker = 'filename="'
+
+                    if marker in headers:
+
+                        filename = headers.split(
+                            marker,1
+                        )[1].split('"',1)[0]
+
+                    filedata = content
+
+            if filename and target and filedata:
+
+                ext = os.path.splitext(filename)[1].lower()
+
+                allowed = [
+                    ".jpg",
+                    ".jpeg",
+                    ".png",
+                    ".webp",
+                    ".gif"
+                ]
+
+                if ext in allowed:
+
+                    newname = (
+                        str(uuid.uuid4())
+                        + ext
+                    )
+
+                    filepath = os.path.join(
+                        UPLOADS,
+                        newname
+                    )
+
+                    with open(filepath, "wb") as f:
+                        f.write(filedata)
+
+                    mtype = "gif" if ext == ".gif" else "image"
+
+                    messages = load("messages", [])
+
+                    messages.append({
+                        "id": str(uuid.uuid4()),
+                        "from": user,
+                        "to": target,
+                        "type": mtype,
+                        "filename": newname,
+                        "date": now()
+                    })
+
+                    save("messages", messages)
+
+            self.redirect(
+                "/chat?user=" + target
+            )
+
+            return
+
+        self.redirect("/")
 
 
 if __name__ == "__main__":
 
+    print("サーバー起動")
+    print("http://localhost:8000")
+
     server = HTTPServer(
         ("0.0.0.0", PORT),
         Server
-    )
-
-    print(
-        "サーバー起動中 PORT="
-        + str(PORT)
     )
 
     server.serve_forever()
